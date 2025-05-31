@@ -1,0 +1,105 @@
+<body>
+  <div class="container">
+    <h2>LLM Chat</h2>
+    <div id="chat-box" class="chat-box"></div>
+    
+    <div id="queue-status" style="margin: 10px 0; font-style: italic; color: gray;"></div>
+    <div id="loading" style="display:none;">⏳ Generating response...</div>
+    
+    <form id="chat-form">
+      <input type="text" id="prompt" required placeholder="Ask something..." />
+      <button type="submit">Send</button>
+    </form>
+  </div>
+
+  <script>
+    const chatBox = document.getElementById('chat-box');
+    const form = document.getElementById('chat-form');
+    const promptInput = document.getElementById('prompt');
+    const loading = document.getElementById('loading');
+    const queueStatus = document.getElementById('queue-status');
+
+    let queue = [];
+    let isProcessing = false;
+
+    form.onsubmit = e => {
+      e.preventDefault();
+      const text = promptInput.value;
+      if (!text) return;
+      queue.push(text);
+      updateQueueStatus();
+      promptInput.value = '';
+      processQueue();
+    };
+
+    function updateQueueStatus() {
+      if (queue.length > 0) {
+        queueStatus.innerText = `In queue: ${queue.length}`;
+      } else {
+        queueStatus.innerText = '';
+      }
+    }
+
+    async function processQueue() {
+      if (isProcessing || queue.length === 0) return;
+      isProcessing = true;
+      updateQueueStatus();
+
+      const text = queue.shift();
+      const userID = localStorage.getItem('user'); // Replace with session or state
+      const model = localStorage.getItem('model'); // from login
+      print("Ojo:", userID, model)
+
+      const userBubble = document.createElement('div');
+      userBubble.className = 'user-msg';
+      userBubble.innerText = text;
+      chatBox.appendChild(userBubble);
+
+      const botBubble = document.createElement('div');
+      botBubble.className = 'bot-msg';
+      chatBox.appendChild(botBubble);
+
+      loading.style.display = 'block';
+
+      const response = await fetch('/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message: text, model, user_id: userID }),
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let full = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        chunk.split('\n\n').forEach(line => {
+          if (line.startsWith('data: ')) {
+            const token = line.replace('data: ', '');
+            botBubble.innerText += token;
+            full += token;
+          }
+        });
+      }
+
+      loading.style.display = 'none';
+      chatBox.scrollTop = chatBox.scrollHeight;
+
+      isProcessing = false;
+      updateQueueStatus();
+      processQueue();
+    }
+  </script>
+
+  <style>
+    body { font-family: sans-serif; background: #f7f7f7; padding: 20px; }
+    .container { max-width: 600px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; }
+    .chat-box { height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; }
+    .user-msg { text-align: right; background: #d1e7dd; padding: 10px; margin: 5px 0; border-radius: 8px; }
+    .bot-msg { text-align: left; background: #f8d7da; padding: 10px; margin: 5px 0; border-radius: 8px; white-space: pre-wrap; }
+    input[type=text] { width: 80%; padding: 10px; }
+    button { padding: 10px; }
+  </style>
+</body>

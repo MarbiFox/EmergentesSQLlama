@@ -1,0 +1,49 @@
+// frontend/index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>LLM Tester Access</title>
+</head>
+<body>
+	<h2>Access the LLM Tester</h2>
+	<form action="/submit" method="POST">
+		<label>Name: <input type="text" name="name" required></label><br>
+		<label>Email: <input type="email" name="email" required></label><br>
+		<label>Purpose: <textarea name="purpose" required></textarea></label><br>
+		<button type="submit">Continue</button>
+	</form>
+</body>
+</html>
+
+// frontend/chat.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Chat with LLM</title>
+</head>
+<body>
+	<h2>Chat Interface</h2>
+	<div id="chat-box"></div>
+	<input type="text" id="prompt" placeholder="Type your question...">
+	<button onclick="sendPrompt()">Send</button>
+
+	<script>
+	function sendPrompt() {
+		const prompt = document.getElementById('prompt').value;
+		fetch('/chat', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({ prompt: prompt })
+		})
+		.then(res => res.json())
+		.then(data => {
+			document.getElementById('chat-box').innerHTML += '<p><b>You:</b> ' + prompt + '</p>';
+			document.getElementById('chat-box').innerHTML += '<p><b>Model:</b> ' + (data.response || JSON.stringify(data)) + '</p>';
+		})
+		.catch(err => alert('Error: ' + err));
+	}
+	</script>
+</body>
+</html>
