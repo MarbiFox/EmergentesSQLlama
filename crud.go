@@ -176,6 +176,36 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	insertResponse(full, promptID, modelID)
 }
 
+func getUserInfoHandler(w http.ResponseWriter, r *http.Request) {
+	rut := r.URL.Query().Get("rut")
+	if rut == "" {
+		http.Error(w, "Missing RUT", http.StatusBadRequest)
+		return
+	}
+
+	var userID, modelID int
+	var modelName string
+
+	err := db.QueryRow("SELECT idUsuario, idModelo FROM Usuario WHERE RUT = ?", rut).Scan(&userID, &modelID)
+	if err != nil {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	err = db.QueryRow("SELECT NombreModelo FROM ModeloLLM WHERE idModelo = ?", modelID).Scan(&modelName)
+	if err != nil {
+		http.Error(w, "Model not found", http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]interface{}{
+		"user_id": userID,
+		"model":   modelName,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
 func main() {
 	var err error
 	db, err = sql.Open("mysql", "root:@tcp(127.0.0.1:3306)/datasql")
@@ -191,6 +221,7 @@ func main() {
 	http.HandleFunc("/start", userEntryHandler)
 	http.HandleFunc("/chat", chatHandler)
 	http.Handle("/", http.FileServer(http.Dir(".")))
+	http.HandleFunc("/get-user-info", getUserInfoHandler)
 
 	fmt.Println("Server on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))

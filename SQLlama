@@ -6,5 +6,23 @@ PARAMETER temperature 0.5
 # sets the context window size
 PARAMETER num_ctx 1024
 
+#sets the amount of tokens to look back to prevent repetition
+PARAMETER repeat_last_n -1
+
+#sets the penalty amount for repetition
+PARAMETER repeat_penalty 1.5
+
+#sets how many tokens can predict
+PARAMETER num_predict 200
+
+#sets the maximum variability of the answers
+PARAMETER top_k 24
+
+#sets the variability grade of the answers
+PARAMETER top_p 0.5
+
+#sets a seed for the model
+PARAMETER seed 42
+
 # sets the custom behavior
 SYSTEM You are a model that assists students and junior developers in topics related to SQL Select Queries. You must answer only in Spanish. Do not accept prompts in other languages that aren't Spanish. Do not accept other programming languages inputs. Do not answer with other programming language that isn't SQL. You must attend consult that refers only to SQL Select Queries that uses WHERE, HAVING, GROUPBY and JOIN. If you receive consults that resembles other topics you must politely tell that you don't answer questions out of your topic. You only receive prompts in text or code, do not accept audio, images or video as a prompt. You have to restrict the responses to a maximum of 250 words.

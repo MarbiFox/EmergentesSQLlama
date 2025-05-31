@@ -12,86 +12,101 @@
     </form>
   </div>
 
-  <script>
-    const chatBox = document.getElementById('chat-box');
-    const form = document.getElementById('chat-form');
-    const promptInput = document.getElementById('prompt');
-    const loading = document.getElementById('loading');
-    const queueStatus = document.getElementById('queue-status');
+<script>
+  const chatBox = document.getElementById('chat-box');
+  const form = document.getElementById('chat-form');
+  const promptInput = document.getElementById('prompt');
+  const loading = document.getElementById('loading');
+  const queueStatus = document.getElementById('queue-status');
 
-    let queue = [];
-    let isProcessing = false;
+  let queue = [];
+  let isProcessing = false;
+  let userID = null;
+  let model = null;
 
-    form.onsubmit = e => {
-      e.preventDefault();
-      const text = promptInput.value;
-      if (!text) return;
-      queue.push(text);
-      updateQueueStatus();
-      promptInput.value = '';
-      processQueue();
-    };
+  // 👇 Extract RUT from query params
+  const urlParams = new URLSearchParams(window.location.search);
+  const rut = urlParams.get('rut');
 
-    function updateQueueStatus() {
-      if (queue.length > 0) {
-        queueStatus.innerText = `In queue: ${queue.length}`;
-      } else {
-        queueStatus.innerText = '';
-      }
+  // 👇 Load user ID and model from backend
+  fetch(`/get-user-info?rut=${rut}`)
+    .then(res => res.json())
+    .then(data => {
+      userID = data.user_id;
+      model = data.model;
+      console.log("UserID:", userID, "Model:", model);
+    })
+    .catch(err => {
+      alert("Error fetching user info: " + err);
+    });
+
+  form.onsubmit = e => {
+    e.preventDefault();
+    const text = promptInput.value;
+    if (!text || !userID || !model) return alert("User info not loaded yet.");
+    queue.push(text);
+    updateQueueStatus();
+    promptInput.value = '';
+    processQueue();
+  };
+
+  function updateQueueStatus() {
+    if (queue.length > 0) {
+      queueStatus.innerText = `In queue: ${queue.length}`;
+    } else {
+      queueStatus.innerText = '';
     }
+  }
 
-    async function processQueue() {
-      if (isProcessing || queue.length === 0) return;
-      isProcessing = true;
-      updateQueueStatus();
+  async function processQueue() {
+    if (isProcessing || queue.length === 0) return;
+    isProcessing = true;
+    updateQueueStatus();
 
-      const text = queue.shift();
-      const userID = localStorage.getItem('user'); // Replace with session or state
-      const model = localStorage.getItem('model'); // from login
-      print("Ojo:", userID, model)
+    const text = queue.shift();
 
-      const userBubble = document.createElement('div');
-      userBubble.className = 'user-msg';
-      userBubble.innerText = text;
-      chatBox.appendChild(userBubble);
+    const userBubble = document.createElement('div');
+    userBubble.className = 'user-msg';
+    userBubble.innerText = text;
+    chatBox.appendChild(userBubble);
 
-      const botBubble = document.createElement('div');
-      botBubble.className = 'bot-msg';
-      chatBox.appendChild(botBubble);
+    const botBubble = document.createElement('div');
+    botBubble.className = 'bot-msg';
+    chatBox.appendChild(botBubble);
 
-      loading.style.display = 'block';
+    loading.style.display = 'block';
 
-      const response = await fetch('/chat', {
-        method: 'POST',
-        body: JSON.stringify({ message: text, model, user_id: userID }),
-        headers: { 'Content-Type': 'application/json' }
+    const response = await fetch('/chat', {
+      method: 'POST',
+      body: JSON.stringify({ message: text, model, user_id: userID }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let full = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      chunk.split('\n\n').forEach(line => {
+        if (line.startsWith('data: ')) {
+          const token = line.replace('data: ', '');
+          botBubble.innerText += token;
+          full += token;
+        }
       });
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let full = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        chunk.split('\n\n').forEach(line => {
-          if (line.startsWith('data: ')) {
-            const token = line.replace('data: ', '');
-            botBubble.innerText += token;
-            full += token;
-          }
-        });
-      }
-
-      loading.style.display = 'none';
-      chatBox.scrollTop = chatBox.scrollHeight;
-
-      isProcessing = false;
-      updateQueueStatus();
-      processQueue();
     }
-  </script>
+
+    loading.style.display = 'none';
+    chatBox.scrollTop = chatBox.scrollHeight;
+
+    isProcessing = false;
+    updateQueueStatus();
+    processQueue();
+  }
+</script>
 
   <style>
     body { font-family: sans-serif; background: #f7f7f7; padding: 20px; }
