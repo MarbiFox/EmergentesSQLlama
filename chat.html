@@ -1,11 +1,17 @@
+<!-- frontend/chat.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Chat with LLM</title>
+</head>
 <body>
   <div class="container">
     <h2>LLM Chat</h2>
     <div id="chat-box" class="chat-box"></div>
-    
     <div id="queue-status" style="margin: 10px 0; font-style: italic; color: gray;"></div>
     <div id="loading" style="display:none;">⏳ Generating response...</div>
-    
+
     <form id="chat-form">
       <input type="text" id="prompt" required placeholder="Ask something..." />
       <button type="submit">Send</button>
@@ -24,26 +30,22 @@
   let userID = null;
   let model = null;
 
-  // 👇 Extract RUT from query params
   const urlParams = new URLSearchParams(window.location.search);
   const rut = urlParams.get('rut');
 
-  // 👇 Load user ID and model from backend
   fetch(`/get-user-info?rut=${rut}`)
     .then(res => res.json())
     .then(data => {
       userID = data.user_id;
       model = data.model;
-      console.log("UserID:", userID, "Model:", model);
     })
-    .catch(err => {
-      alert("Error fetching user info: " + err);
-    });
+    .catch(err => alert("User not found: " + err));
 
   form.onsubmit = e => {
     e.preventDefault();
-    const text = promptInput.value;
-    if (!text || !userID || !model) return alert("User info not loaded yet.");
+    const text = promptInput.value.trim();
+    if (!text || !userID || !model) return;
+
     queue.push(text);
     updateQueueStatus();
     promptInput.value = '';
@@ -51,11 +53,7 @@
   };
 
   function updateQueueStatus() {
-    if (queue.length > 0) {
-      queueStatus.innerText = `In queue: ${queue.length}`;
-    } else {
-      queueStatus.innerText = '';
-    }
+    queueStatus.innerText = queue.length > 0 ? `In queue: ${queue.length}` : '';
   }
 
   async function processQueue() {
@@ -64,7 +62,6 @@
     updateQueueStatus();
 
     const text = queue.shift();
-
     const userBubble = document.createElement('div');
     userBubble.className = 'user-msg';
     userBubble.innerText = text;
@@ -73,7 +70,6 @@
     const botBubble = document.createElement('div');
     botBubble.className = 'bot-msg';
     chatBox.appendChild(botBubble);
-
     loading.style.display = 'block';
 
     const response = await fetch('/chat', {
@@ -86,17 +82,66 @@
     const decoder = new TextDecoder('utf-8');
     let full = '';
 
+    let inCodeBlock = false;
+    let codeBuffer = '';
+    let partial = '';
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+
       const chunk = decoder.decode(value, { stream: true });
-      chunk.split('\n\n').forEach(line => {
-        if (line.startsWith('data: ')) {
-          const token = line.replace('data: ', '');
-          botBubble.innerText += token;
-          full += token;
+      partial += chunk;
+
+      const parts = partial.split('\n\n');
+      partial = parts.pop(); // keep any incomplete part
+
+      parts.forEach(line => {
+        if (!line.startsWith('data: ')) return;
+
+        let token = line.slice(6); // strip 'data: '
+        full += token;
+
+        // Handle inline code blocks like: "This is ```some code``` inline"
+        token = token.replace(/```([\s\S]*?)```/g, (_, codeContent) => {
+          return `<br><strong>sql</strong><pre><code>${escapeHTML(codeContent.trim())}</code></pre><br>`;
+        });
+
+        const backtickCount = (token.match(/```/g) || []).length;
+
+        if (backtickCount > 0) {
+          token.split(/```/).forEach((seg, i) => {
+            if (i % 2 === 0) {
+              if (inCodeBlock) {
+                codeBuffer += seg;
+              } else {
+                botBubble.innerHTML += seg.replace(/\n/g, '<br>');
+              }
+            } else {
+              if (!inCodeBlock) {
+                codeBuffer = '';
+                inCodeBlock = true;
+              } else {
+                inCodeBlock = false;
+                botBubble.innerHTML += `<pre><code>${escapeHTML(codeBuffer)}</code></pre>`;
+              }
+            }
+          });
+        } else {
+          if (inCodeBlock) {
+            codeBuffer += token;
+          } else {
+            botBubble.innerHTML += token.replace(/\n/g, '<br>');
+          }
         }
       });
+    }
+
+    // Helper function to safely escape code
+    function escapeHTML(str) {
+      return str.replace(/[&<>"']/g, tag => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[tag]
+      ));
     }
 
     loading.style.display = 'none';
@@ -108,13 +153,22 @@
   }
 </script>
 
-  <style>
-    body { font-family: sans-serif; background: #f7f7f7; padding: 20px; }
-    .container { max-width: 600px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; }
-    .chat-box { height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; }
-    .user-msg { text-align: right; background: #d1e7dd; padding: 10px; margin: 5px 0; border-radius: 8px; }
-    .bot-msg { text-align: left; background: #f8d7da; padding: 10px; margin: 5px 0; border-radius: 8px; white-space: pre-wrap; }
-    input[type=text] { width: 80%; padding: 10px; }
-    button { padding: 10px; }
-  </style>
+<style>
+   body { font-family: sans-serif; background: #f7f7f7; padding: 20px; }
+  .container { max-width: 600px; margin: auto; background: #fff; padding: 20px; border-radius: 8px; }
+  .chat-box { height: 400px; overflow-y: auto; border: 1px solid #ddd; padding: 10px; margin-bottom: 10px; }
+  .user-msg { text-align: right; background: #d1e7dd; padding: 10px; margin: 5px 0; border-radius: 8px; }
+  .bot-msg { text-align: left; background: #f8d7da; padding: 10px; margin: 5px 0; border-radius: 8px; white-space: pre-wrap; }
+  input[type=text] { width: 80%; padding: 10px; }
+  button { padding: 10px; }
+  pre code {
+  background: #eee;
+  padding: 10px;
+  display: block;
+  white-space: pre-wrap;
+  border-radius: 4px;
+  font-family: monospace;
+  }
+</style>
 </body>
+</html>

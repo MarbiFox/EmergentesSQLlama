@@ -1,4 +1,4 @@
-// main.go
+// crud.go
 package main
 
 import (
@@ -15,9 +15,18 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
+var forbiddenPrompts = []string{
+	"shutdown system",
+	"delete db",
+	"format drive",
+	// Add more as needed
+}
+
 var (
-	db   *sql.DB
-	tmpl = template.Must(template.New("form").Parse(`
+	db        *sql.DB
+	mu        sync.Mutex
+	ollamaSem = make(chan struct{}, 3) // max 3 concurrent calls
+	tmpl      = template.Must(template.New("form").Parse(`
 <!DOCTYPE html>
 <html>
 <head>
@@ -44,62 +53,71 @@ var (
 </body>
 </html>
 	`))
-	mu sync.Mutex
 )
 
+// ----- DB Access -----
 func getUserAndModel(rut string) (int, int, string, error) {
 	var userID, modelID int
 	var modelName string
-
 	err := db.QueryRow("SELECT idUsuario, idModelo FROM Usuario WHERE RUT = ?", rut).Scan(&userID, &modelID)
 	if err != nil {
 		return 0, 0, "", err
 	}
-
 	err = db.QueryRow("SELECT NombreModelo FROM ModeloLLM WHERE idModelo = ?", modelID).Scan(&modelName)
 	if err != nil {
 		return 0, 0, "", err
 	}
-
-	print(userID, modelID, "\n")
-	return userID, modelID, modelName, nil
+	return userID, modelID, modelName, err
 }
 
-func insertPromptAndGetID(prompt string, userID int) (int, error) {
+func isForbidden(prompt string) bool {
+	for _, bad := range forbiddenPrompts {
+		if bytes.Contains(bytes.ToLower([]byte(prompt)), bytes.ToLower([]byte(bad))) {
+			return true
+		}
+	}
+	return false
+}
+
+func insertPrompt(prompt string, userID int) (int, error) {
 	res, err := db.Exec("INSERT INTO Consulta (Texto, idUsuario) VALUES (?, ?)", prompt, userID)
 	if err != nil {
 		return 0, err
 	}
 	id, err := res.LastInsertId()
-	return int(id), err
+	if err != nil {
+		return 0, err
+	}
+	return int(id), nil
 }
 
-func insertResponse(response string, promptID, modelID int) error {
-	_, err := db.Exec("INSERT INTO Respuesta (Texto, idPrompt, idModelo) VALUES (?, ?, ?)", response, promptID, modelID)
+func insertResponse(text string, promptID, modelID int) error {
+	_, err := db.Exec("INSERT INTO Respuesta (Texto, idPrompt, idModelo) VALUES (?, ?, ?)", text, promptID, modelID)
+	if err != nil {
+		return err
+	}
 	return err
 }
 
+// ----- Handlers -----
 func userEntryHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
 		tmpl.Execute(w, nil)
 		return
 	}
-
 	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST and GET allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	rut := r.FormValue("rut")
 	name := r.FormValue("name")
+	rut := r.FormValue("rut")
 
-	_, _, model, err := getUserAndModel(rut)
+	_, _, _, err := getUserAndModel(rut)
 	if err != nil {
-		http.Error(w, "User not found or no model assigned", http.StatusUnauthorized)
+		http.Error(w, "User not found or model missing", http.StatusUnauthorized)
 		return
 	}
-
-	http.Redirect(w, r, "/chat.html?rut="+rut+"&model="+model+"&name="+name, http.StatusSeeOther)
+	http.Redirect(w, r, "/chat.html?rut="+rut+"&name="+name, http.StatusSeeOther)
 }
 
 type chatRequest struct {
@@ -116,30 +134,38 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
+	if isForbidden(req.Message) {
+		http.Error(w, "This prompt is not allowed.", http.StatusForbidden)
+		return
+	}
 
-	promptID, err := insertPromptAndGetID(req.Message, req.UserID)
+	promptID, err := insertPrompt(req.Message, req.UserID)
 	if err != nil {
 		http.Error(w, "DB error", http.StatusInternalServerError)
 		return
 	}
 
-	print(req.UserID)
-	modelID := 0
-	db.QueryRow("SELECT idModelo FROM Usuario WHERE idUsuario = ?", req.UserID).Scan(&modelID)
-	print(modelID)
+	var modelID int
+	err = db.QueryRow("SELECT idModelo FROM Usuario WHERE idUsuario = ?", req.UserID).Scan(&modelID)
+	if err != nil {
+		http.Error(w, "Model lookup failed", http.StatusInternalServerError)
+		return
+	}
 
-	ollamaBody := map[string]interface{}{
+	ollamaSem <- struct{}{} // acquire slot
+	defer func() { <-ollamaSem }()
+
+	body := map[string]interface{}{
 		"model":  req.Model,
 		"prompt": req.Message,
+		"stream": true,
 	}
 	buf := new(bytes.Buffer)
-	json.NewEncoder(buf).Encode(ollamaBody)
+	json.NewEncoder(buf).Encode(body)
 
 	resp, err := http.Post("http://localhost:11434/api/generate", "application/json", buf)
 	if err != nil {
@@ -151,6 +177,7 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
@@ -166,10 +193,10 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		} else if err != nil {
 			break
 		}
-		if content, ok := chunk["response"].(string); ok {
-			fmt.Fprintf(w, "data: %s\n\n", content)
+		if txt, ok := chunk["response"].(string); ok {
+			fmt.Fprintf(w, "data: %s\n\n", txt)
 			flusher.Flush()
-			full += content
+			full += txt
 		}
 	}
 
@@ -182,47 +209,31 @@ func getUserInfoHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing RUT", http.StatusBadRequest)
 		return
 	}
-
-	var userID, modelID int
-	var modelName string
-
-	err := db.QueryRow("SELECT idUsuario, idModelo FROM Usuario WHERE RUT = ?", rut).Scan(&userID, &modelID)
+	userID, _, model, err := getUserAndModel(rut)
 	if err != nil {
-		http.Error(w, "User not found", http.StatusNotFound)
+		http.Error(w, "User/model not found", http.StatusNotFound)
 		return
 	}
-
-	err = db.QueryRow("SELECT NombreModelo FROM ModeloLLM WHERE idModelo = ?", modelID).Scan(&modelName)
-	if err != nil {
-		http.Error(w, "Model not found", http.StatusInternalServerError)
-		return
-	}
-
-	resp := map[string]interface{}{
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"user_id": userID,
-		"model":   modelName,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+		"model":   model,
+	})
 }
 
+// ----- Main -----
 func main() {
 	var err error
 	db, err = sql.Open("mysql", "root:@tcp(127.0.0.1:3306)/datasql")
 	if err != nil {
-		log.Fatalf("DB open error: %v", err)
+		log.Fatalf("DB error: %v", err)
 	}
 	defer db.Close()
 
-	if err = db.Ping(); err != nil {
-		log.Fatalf("DB ping error: %v", err)
-	}
-
 	http.HandleFunc("/start", userEntryHandler)
 	http.HandleFunc("/chat", chatHandler)
-	http.Handle("/", http.FileServer(http.Dir(".")))
 	http.HandleFunc("/get-user-info", getUserInfoHandler)
+	http.Handle("/", http.FileServer(http.Dir(".")))
 
-	fmt.Println("Server on :8080")
+	fmt.Println("Server started at http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
